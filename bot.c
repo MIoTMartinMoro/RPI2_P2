@@ -19,13 +19,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <fcntl.h> 
+#include <unistd.h> 
 
 #include <strophe.h>
 #include <mosquitto.h>
 
 // Server connection parameters
 #define MQTT_HOSTNAME "localhost/192.168.1.1"
-#define MQTT_BROKER "192.168.2.91"
+#define MQTT_BROKER "192.168.1.91"
 #define MQTT_PORT 1883
 #define MQTT_USERNAME "miot"
 #define MQTT_PASSWORD "masteriot"
@@ -33,7 +37,8 @@
 #define SIZE 200
 
 struct mosquitto* mosq;
-int mensajes[2];
+int mensajes;
+char* myfifo = "/tmp/mensajes";
 
 void my_message_callback(struct mosquitto* mosq, void* Obj, const struct mosquitto_message* message)
 {
@@ -41,9 +46,10 @@ void my_message_callback(struct mosquitto* mosq, void* Obj, const struct mosquit
     memset(msg, "\0", SIZE);
     strcpy(msg, (char*) message->payload);
 
-    close(mensajes[0]);
     printf("%s\n", msg);
-    write(mensajes[1], msg, SIZE);
+    mensajes = open(myfifo, O_WRONLY);
+    write(mensajes, msg, SIZE);
+    close(mensajes);
 }
 
 int version_handler(xmpp_conn_t * const conn, xmpp_stanza_t * const stanza, void * const userdata)
@@ -123,8 +129,14 @@ int message_handler(xmpp_conn_t * const conn, xmpp_stanza_t * const stanza, void
         char* response[SIZE];
         memset(response, "\0", SIZE);
 
-        close(mensajes[1]);
+        /*close(mensajes[1]);
         read(mensajes[0], response, SIZE);
+        printf("%s\n", response);*/
+
+        mensajes = open(myfifo, O_RDONLY);
+        read(mensajes, response, SIZE);
+        close(mensajes);
+
         printf("%s\n", response);
 
         strcpy(intext, "Sensors: ");
@@ -180,7 +192,7 @@ int main(int argc, char **argv)
     xmpp_log_t *log;
     char *jid, *pass;
 
-    pipe(mensajes);
+    mkfifo(myfifo, 0666);
 
     /* take a jid and password on the command line */
     if (argc != 3) {
