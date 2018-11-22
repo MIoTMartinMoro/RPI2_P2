@@ -16,12 +16,9 @@
 ** This bot responds to basic messages and iq version requests.
 */
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <fcntl.h> 
-#include <unistd.h> 
 
 #include <strophe.h>
 #include <mosquitto.h>
@@ -47,9 +44,7 @@ void my_message_callback(struct mosquitto* mosq, void* Obj, const struct mosquit
     strcpy(msg, (char*) message->payload);
 
     printf("%s\n", msg);
-    mensajes = open(myfifo, O_WRONLY);
-    write(mensajes, msg, SIZE);
-    close(mensajes);
+    write(mensajes[1], msg, SIZE);
 }
 
 int version_handler(xmpp_conn_t * const conn, xmpp_stanza_t * const stanza, void * const userdata)
@@ -212,7 +207,6 @@ void leer_xmpp()
     char response[SIZE];
     memset(response, "\0", SIZE);
 
-    //close(mensajes[1]);
     while((read(mensajes[0], response, SIZE)) > 0)
         strcpy(ultimo_mensaje, response);
 }
@@ -225,7 +219,7 @@ int main(int argc, char **argv)
     char *jid, *pass;
     pthread_t xmpp_th, mosquitto_th;
 
-    mkfifo(myfifo, 0666);
+    pipe(mensajes);
 
     pthread_create (&xmpp_th, NULL, leer_mosquitto, NULL); 
     pthread_create (&mosquitto_th, NULL, leer_xmpp, NULL); 
