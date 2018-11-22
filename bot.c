@@ -18,6 +18,10 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <fcntl.h> 
+#include <unistd.h> 
 
 #include <strophe.h>
 #include <mosquitto.h>
@@ -43,7 +47,9 @@ void my_message_callback(struct mosquitto* mosq, void* Obj, const struct mosquit
     strcpy(msg, (char*) message->payload);
 
     printf("%s\n", msg);
-    write(mensajes[1], msg, SIZE);
+    mensajes = open(myfifo, O_WRONLY);
+    write(mensajes, msg, SIZE);
+    close(mensajes);
 }
 
 int version_handler(xmpp_conn_t * const conn, xmpp_stanza_t * const stanza, void * const userdata)
@@ -219,7 +225,7 @@ int main(int argc, char **argv)
     char *jid, *pass;
     pthread_t xmpp_th, mosquitto_th;
 
-    pipe(mensajes);
+    mkfifo(myfifo, 0666);
 
     pthread_create (&xmpp_th, NULL, leer_mosquitto, NULL); 
     pthread_create (&mosquitto_th, NULL, leer_xmpp, NULL); 
