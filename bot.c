@@ -15,17 +15,17 @@
 **
 ** This bot responds to basic messages and iq version requests.
 */
-//LD_LIBRARY_PATH=/usr/lib/:$LD_LIBRARY_PATH ./bot carlos@ci40.xmpp.carlos.com masteriot
-#include <stdio.h>
+
 #include <stdlib.h>
 #include <string.h>
 
 #include <strophe.h>
 #include <mosquitto.h>
+#include <pthread.h>
 
 // Server connection parameters
 #define MQTT_HOSTNAME "localhost/192.168.1.1"
-#define MQTT_BROKER "192.168.2.91"
+#define MQTT_BROKER "192.168.1.91"
 #define MQTT_PORT 1883
 #define MQTT_USERNAME "miot"
 #define MQTT_PASSWORD "masteriot"
@@ -34,6 +34,7 @@
 
 struct mosquitto* mosq;
 int mensajes[2];
+char ultimo_mensaje[SIZE];
 
 void my_message_callback(struct mosquitto* mosq, void* Obj, const struct mosquitto_message* message)
 {
@@ -41,7 +42,6 @@ void my_message_callback(struct mosquitto* mosq, void* Obj, const struct mosquit
     memset(msg, "\0", SIZE);
     strcpy(msg, (char*) message->payload);
 
-    close(mensajes[0]);
     printf("%s\n", msg);
     write(mensajes[1], msg, SIZE);
 }
@@ -120,17 +120,11 @@ int message_handler(xmpp_conn_t * const conn, xmpp_stanza_t * const stanza, void
         replytext = strdup("bye!");
         quit = 1;
     } else if (strcmp(intext, "sensors") == 0) {
-        char* response[SIZE];
-        memset(response, "\0", SIZE);
-
-        close(mensajes[1]);
-        read(mensajes[0], response, SIZE);
-        printf("%s\n", response);
-
         strcpy(intext, "Sensors: ");
-        replytext = (char *) malloc(strlen(response) + strlen(intext) + 1);
+        replytext = (char *) malloc(strlen(ultimo_mensaje) + strlen(intext) + 1);
+        printf("%s\n", ultimo_mensaje);
         strcpy(replytext, intext);
-        strcat(replytext, response);
+        strcat(replytext, ultimo_mensaje);
     } else {
         replytext = (char *) malloc(strlen(" to you too!") + strlen(intext) + 1);
         strcpy(replytext, intext);
@@ -173,14 +167,62 @@ void conn_handler(xmpp_conn_t * const conn, const xmpp_conn_event_t status,
     }
 }
 
+void leer_mosquitto()
+{
+    mosquitto_lib_init();
+
+    mosq = mosquitto_new(NULL, true, NULL);
+    
+    if(!mosq) {
+        fprintf(stderr, "Can't init Mosquitto library\n");
+        exit(1);
+    }
+
+    mosquitto_username_pw_set(mosq, MQTT_USERNAME, MQTT_PASSWORD);
+
+    int ret = mosquitto_connect(mosq, MQTT_BROKER, MQTT_PORT, 0);
+
+    if(ret) {
+        fprintf(stderr, "Can't connect to Mosquitto server\n");
+        exit(1);
+    }
+
+    ret = mosquitto_subscribe(mosq, NULL, MQTT_TOPIC, 0);
+
+    if(ret) {
+        fprintf(stderr, "Can't publish to Mosquitto server\n");
+        exit(1);
+    }
+
+    mosquitto_message_callback_set(mosq,my_message_callback);
+
+    mosquitto_loop_forever(mosq,-1,1);
+
+    mosquitto_lib_cleanup();
+}
+
+void leer_xmpp()
+{
+    char response[SIZE];
+    memset(response, "\0", SIZE);
+
+    //close(mensajes[1]);
+    while((read(mensajes[0], response, SIZE)) > 0)
+        strcpy(ultimo_mensaje, response);
+}
+
 int main(int argc, char **argv)
 {
     xmpp_ctx_t *ctx;
     xmpp_conn_t *conn;
     xmpp_log_t *log;
     char *jid, *pass;
+    pthread_t xmpp_th, mosquitto_th;
 
     pipe(mensajes);
+
+    pthread_create (&xmpp_th, NULL, leer_mosquitto, NULL); 
+    pthread_create (&mosquitto_th, NULL, leer_xmpp, NULL); 
 
     /* take a jid and password on the command line */
     if (argc != 3) {
@@ -191,76 +233,42 @@ int main(int argc, char **argv)
     jid = argv[1];
     pass = argv[2];
 
-    if (fork() == 0) {
-        mosquitto_lib_init();
+    xmpp_initialize();
 
-        mosq = mosquitto_new(NULL, true, NULL);
-        
-        if(!mosq) {
-            fprintf(stderr, "Can't init Mosquitto library\n");
-            exit(1);
-        }
+    /* create a context */
+    log = xmpp_get_default_logger(XMPP_LEVEL_DEBUG); /* pass NULL instead to silence output */
+    ctx = xmpp_ctx_new(NULL, log);
 
-        mosquitto_username_pw_set(mosq, MQTT_USERNAME, MQTT_PASSWORD);
+    /* create a connection */
+    conn = xmpp_conn_new(ctx);
 
-        int ret = mosquitto_connect(mosq, MQTT_BROKER, MQTT_PORT, 0);
+    /*
+     * also you can disable TLS support or force legacy SSL
+     * connection without STARTTLS
+     *
+     * see xmpp_conn_set_flags() or examples/basic.c
+     */
 
-        if(ret) {
-            fprintf(stderr, "Can't connect to Mosquitto server\n");
-            exit(1);
-        }
+    /* setup authentication information */
+    xmpp_conn_set_jid(conn, jid);
+    xmpp_conn_set_pass(conn, pass);
 
-        ret = mosquitto_subscribe(mosq, NULL, MQTT_TOPIC, 0);
+    /* initiate connection */
+    xmpp_connect_client(conn, NULL, 0, conn_handler, ctx);
 
-        if(ret) {
-            fprintf(stderr, "Can't publish to Mosquitto server\n");
-            exit(1);
-        }
+    /* enter the event loop - 
+       our connect handler will trigger an exit */
+    xmpp_run(ctx);
 
-        mosquitto_message_callback_set(mosq,my_message_callback);
+    /* release our connection and context */
+    xmpp_conn_release(conn);
+    xmpp_ctx_free(ctx);
 
-        mosquitto_loop_forever(mosq,-1,1);
+    /* final shutdown of the library */
+    xmpp_shutdown();
 
-        mosquitto_lib_cleanup();
+    close(mensajes[0]);
+    close(mensajes[1]);
 
-        return 0;
-    } else {
-
-        /* init library */
-        xmpp_initialize();
-
-        /* create a context */
-        log = xmpp_get_default_logger(XMPP_LEVEL_DEBUG); /* pass NULL instead to silence output */
-        ctx = xmpp_ctx_new(NULL, log);
-
-        /* create a connection */
-        conn = xmpp_conn_new(ctx);
-
-        /*
-         * also you can disable TLS support or force legacy SSL
-         * connection without STARTTLS
-         *
-         * see xmpp_conn_set_flags() or examples/basic.c
-         */
-
-        /* setup authentication information */
-        xmpp_conn_set_jid(conn, jid);
-        xmpp_conn_set_pass(conn, pass);
-
-        /* initiate connection */
-        xmpp_connect_client(conn, NULL, 0, conn_handler, ctx);
-
-        /* enter the event loop - 
-           our connect handler will trigger an exit */
-        xmpp_run(ctx);
-
-        /* release our connection and context */
-        xmpp_conn_release(conn);
-        xmpp_ctx_free(ctx);
-
-        /* final shutdown of the library */
-        xmpp_shutdown();
-
-        return 0;
-    }
+    return 0;
 }
